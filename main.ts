@@ -1,5 +1,5 @@
 // mend - see SPEC.md
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const FORMATS=['auto','unified','search-replace','v4a','json'];
@@ -57,6 +57,7 @@ function jsonEdits(text:string,ls:string[]):Edit[]{
  if(ls[first]!.trimStart().startsWith('[')){
   let v:unknown;try{v=JSON.parse(text)}catch{throw new Exit2(`error: parse ${first+1}`)}
   if(!Array.isArray(v))throw new Exit2(`error: parse ${first+1}`);
+  if(v.length===0)throw new Exit2(`error: parse ${first+1}`);
   return v.map(x=>{const e=jsonEdit(x);if(!e)throw new Exit2(`error: parse ${first+1}`);return e});
  }
  const out:Edit[]=[];ls.forEach((l,i)=>{if(blank(l))return;let e:Edit|null=null;try{e=jsonEdit(JSON.parse(l))}catch{}if(!e)throw new Exit2(`error: parse ${i+1}`);out.push(e)});return out;
@@ -94,21 +95,21 @@ function unified(ls:string[],strict:boolean):Edit[]{
  while(i<ls.length){
   let start=i;if(diff(ls[i]!)){if(!/^diff --git \S+ \S+$/.test(ls[i]!))throw new Exit2(`error: parse ${i+1}`);i++}else if(pair(i)){i+=2}else{if(ls[i]!.startsWith('@@'))throw new Exit2(`error: parse ${i+1}`);i++;continue}
   let j=i,op:string|null=null,np:string|null=null,ro:string|null=null,rn:string|null=null,dop:string|null=null,dnp:string|null=null,newMode=false,deleted=false,pairUsed=false;
-  if(ls[start]?.startsWith('diff --git ')){const m=/^diff --git (\S+) (\S+)$/.exec(ls[start]!)!;dop=m[1]!.replace(/^a\//,'');dnp=m[2]!.replace(/^b\//,'')}
-  if(pair(start)){pairUsed=true;op=ls[start]!.slice(4).split('\t')[0]!.trim().replace(/^a\//,'');np=ls[start+1]!.slice(4).split('\t')[0]!.trim().replace(/^b\//,'');j=start+2}else j=start+1;
+  if(ls[start]?.startsWith('diff --git ')){const m=/^diff --git (\S+) (\S+)$/.exec(ls[start]!)!;dop=m[1]!.replace(/^[ab]\//,'');dnp=m[2]!.replace(/^[ab]\//,'')}
+  if(pair(start)){pairUsed=true;op=ls[start]!.slice(4).split('\t')[0]!.trim().replace(/^[ab]\//,'');np=ls[start+1]!.slice(4).split('\t')[0]!.trim().replace(/^[ab]\//,'');j=start+2}else j=start+1;
   const hunks:UH[]=[];let header=true;
   while(j<ls.length){
    if(diff(ls[j]!))break;
    if(ls[start]!.startsWith('diff --git ')&&!header&&pair(j))break;
    if(!ls[start]!.startsWith('diff --git ')&&pair(j)&&j!==start+1)break;
    if(ls[j]!.startsWith('@@')){
-    if(deleted){j++;while(j<ls.length&&!diff(ls[j]!)&&!pair(j)&&!ls[j]!.startsWith('@@'))j++;continue}
+    if(deleted||np===' /dev/null'||np==='/dev/null'){j++;while(j<ls.length&&!diff(ls[j]!)&&!pair(j)&&!ls[j]!.startsWith('@@'))j++;continue}
     header=false;const h=/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(ls[j]!);if(!h)throw new Exit2(`error: parse ${j+1}`);
     const A=Number(h[1]!);j++;const o:string[]=[],n:CI[]=[];let oi=0,no=false,noPlus=false,lastRelevant=false,lastLinePlus=false;
     while(j<ls.length){
      const l=ls[j]!;if(diff(l)||pair(j)||l.startsWith('@@'))break;
-     if(l===''){o.push('');n.push({text:'',ctx:true,oi:oi++});lastRelevant=true;lastLinePlus=false;no=false}
-     else if(l.startsWith(' ')){const s=l.slice(1);o.push(s);n.push({text:s,ctx:true,oi:oi++});lastRelevant=true;lastLinePlus=false;no=false}
+     if(l===''){o.push('');n.push({text:'',ctx:true,oi:oi++});lastRelevant=true;lastLinePlus=true;no=false;noPlus=false}
+     else if(l.startsWith(' ')){const s=l.slice(1);o.push(s);n.push({text:s,ctx:true,oi:oi++});lastRelevant=true;lastLinePlus=true;no=false;noPlus=false}
      else if(l.startsWith('-')){o.push(l.slice(1));oi++;lastRelevant=false;lastLinePlus=false;no=false}
      else if(l.startsWith('+')){n.push({text:l.slice(1),ctx:false,oi:-1});lastRelevant=true;lastLinePlus=true;no=false;noPlus=false}
      else if(l.startsWith('\\')){if(lastRelevant)no=true;if(lastLinePlus)noPlus=true;lastLinePlus=false}
@@ -119,7 +120,7 @@ function unified(ls:string[],strict:boolean):Edit[]{
     hunks.push({A,o,n,no,noPlus});continue;
    }
    if(header){
-    if(ls[j]!.startsWith('--- ')){if(j+1>=ls.length||!ls[j+1]!.startsWith('+++ '))throw new Exit2(`error: parse ${j+2}`);pairUsed=true;op=ls[j]!.slice(4).split('\t')[0]!.trim().replace(/^a\//,'');np=ls[j+1]!.slice(4).split('\t')[0]!.trim().replace(/^b\//,'');j+=2;continue}
+    if(ls[j]!.startsWith('--- ')){if(j+1>=ls.length||!ls[j+1]!.startsWith('+++ '))throw new Exit2(`error: parse ${j+2}`);pairUsed=true;op=ls[j]!.slice(4).split('\t')[0]!.trim().replace(/^[ab]\//,'');np=ls[j+1]!.slice(4).split('\t')[0]!.trim().replace(/^[ab]\//,'');j+=2;continue}
     if(ls[j]!.startsWith('rename from '))ro=ls[j]!.slice(12).trim();
     else if(ls[j]!.startsWith('rename to '))rn=ls[j]!.slice(10).trim();
     else if(ls[j]!.startsWith('new file mode'))newMode=true;
@@ -197,14 +198,14 @@ function v4a(ls:string[],strict:boolean):Edit[]{
   else if(l.startsWith('*** Delete File: ')){kind='delete';p=l.slice(17).trim()}
   else if(l.startsWith('*** Update File: ')){kind='update';p=l.slice(17).trim()}
   else throw new Exit2(`error: parse ${i+1}`);
-  const sectionLine=i+1;i++;const section:string[]=[];
+  const updateLine=i+1;i++;const sectionLine=i+1;const section:string[]=[];
   while(i<last&&!ls[i]!.startsWith('*** Add File: ')&&!ls[i]!.startsWith('*** Delete File: ')&&!ls[i]!.startsWith('*** Update File: ')){section.push(ls[i]!);i++}
   while(section.length&&blank(section[section.length-1]!))section.pop();
   if(kind==='add'){
-   const content:string[]=[];for(let k=0;k<section.length;k++){const s=section[k]!;if(s==='')content.push('');else if(s.startsWith('+'))content.push(s.slice(1));else throw new Exit2(`error: parse ${sectionLine+k+1}`)}
+   const content:string[]=[];for(let k=0;k<section.length;k++){const s=section[k]!;if(s==='')content.push('');else if(s.startsWith('+'))content.push(s.slice(1));else throw new Exit2(`error: parse ${sectionLine+k}`)}
    const P=p;out.push(t=>{if(!safe(P))throw new Fail('unsafe',P);if(t.get(P)!==null)throw new Fail('exists',P);t.now.set(P,content.length?content.join('\n')+'\n':'')});
   }else if(kind==='delete'){
-   if(section.length)throw new Exit2(`error: parse ${sectionLine+1}`);
+   if(section.length)throw new Exit2(`error: parse ${sectionLine}`);
    const P=p;out.push(t=>{if(!safe(P))throw new Fail('unsafe',P);if(t.get(P)===null)throw new Fail('missing',P);t.now.set(P,null)});
   }else{
    let move:string|null=null,si=0;if(section[0]?.startsWith('*** Move to: ')){move=section[0]!.slice(13).trim();si=1}
@@ -226,7 +227,7 @@ function v4a(ls:string[],strict:boolean):Edit[]{
     }
     chunks.push({anchor,eof,o,n});
    }
-   if(!chunks.length&&move===null)throw new Exit2(`error: parse ${sectionLine}`);
+   if(!chunks.length&&move===null)throw new Exit2(`error: parse ${updateLine}`);
    const P=p,MP=move;out.push(t=>{
     if(!safe(P))throw new Fail('unsafe',P);
     if(MP!==null&&!safe(MP))throw new Fail('unsafe',MP);
@@ -280,8 +281,19 @@ function run(args:string[]):{code:number;out:string[]}{
  for(const pair of t.moves){const[a,b]=pair.split('\0');if(t.original(a)!==null&&t.now.get(a)===null&&t.original(b)===null&&t.now.get(b)!==null){entries.push({key:b,line:`R ${a} -> ${b}`});keys.delete(a);keys.delete(b)}}
  for(const p of keys){const w=t.original(p),n=t.now.get(p)!;if(w===n)continue;entries.push({key:p,line:`${w===null?'A':n===null?'D':'M'} ${p}`})}
  entries.sort((a,b)=>Buffer.compare(Buffer.from(a.key),Buffer.from(b.key)));
- if(!check){for(const pair of t.moves){const[a,b]=pair.split('\0');if(t.original(a)!==null&&t.now.get(a)===null&&t.original(b)===null&&t.now.get(b)!==null){rmSync(a,{force:true});mkdirSync(dirname(b),{recursive:true});writeFileSync(b,t.now.get(b)!)}}
-  for(const p of keys){const w=t.original(p),n=t.now.get(p)!;if(w===n)continue;if(n===null)rmSync(p,{force:true});else{mkdirSync(dirname(p),{recursive:true});writeFileSync(p,n)}}}
+ if(!check){
+  for(const p of keys){const n=t.now.get(p)!;if(n===null)rmSync(p,{force:true})}
+  for(const pair of t.moves){const[a]=pair.split('\0');if(t.original(a)!==null&&t.now.get(a)===null)rmSync(a,{force:true})}
+  const removed:string[]=[];
+  for(const p of keys)if(t.now.get(p)===null)removed.push(p);
+  for(const pair of t.moves){const[a]=pair.split('\0');removed.push(a)}
+  for(const p of removed){
+   let d=dirname(p);
+   while(d!=='.'){try{rmdirSync(d)}catch{break}d=dirname(d)}
+  }
+  for(const pair of t.moves){const[a,b]=pair.split('\0');if(t.original(a)!==null&&t.now.get(a)===null&&t.original(b)===null&&t.now.get(b)!==null){mkdirSync(dirname(b),{recursive:true});writeFileSync(b,t.now.get(b)!)}}
+  for(const p of keys){const w=t.original(p),n=t.now.get(p)!;if(w===n||n===null)continue;mkdirSync(dirname(p),{recursive:true});writeFileSync(p,n)}
+ }
  const rows=entries.map(e=>e.line);return{code:0,out:[...rows,`ok: ${rows.length} ${rows.length===1?'file':'files'}`]};
 }
 const trialEnv=process.env.MAKEFUN_ENV_URL;
